@@ -71,7 +71,7 @@ The algorithm is:
 7. Recover original eigenvalues: λ = σ + 1/θ.
 8. Recover eigenvectors:
    - `:LQD`: V = (F')⁻¹ (D * (XU)), X = Aσ⁻¹Cb.
-   - Others: V = Cb' \ U.
+   - Others: V = (Cb')⁻¹ U.
 
 Returns:
 (Cb, U, θ, λ, α, β, V, Y, η, D).
