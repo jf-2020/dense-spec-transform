@@ -1,209 +1,147 @@
-# for efficient testing of factorization types, we'll use an API approach
-abstract type FactorizationMethod end
+using LinearAlgebra
 
-# currently there are 4 methods to consider, LDQ (original), LDLᵗ, LU, and
-# eigendecomposition
-struct LQDMethod <: FactorizationMethod end
-struct LDLtMethod <: FactorizationMethod end
-struct LUMethod <: FactorizationMethod end
-struct EigMethod <: FactorizationMethod end
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
 
-# regular shift for spec transform
-function shift(
-  A::AbstractMatrix{E},
-  B::AbstractMatrix{E},
-  σ,
-) where {E<:AbstractFloat}
-  A1 = similar(A)
-  for k in axes(A, 2)
-    for j in axes(A, 1)
-      A1[j, k] = fma(-σ, B[j, k], A[j, k])
+"""
+    shift(A, B, σ)
+
+Return the shifted matrix Aσ = A - σB.
+This is the core step in the shift-and-invert strategy.
+"""
+function shift(A::AbstractMatrix{E}, B::AbstractMatrix{E}, σ) where {E<:AbstractFloat}
+    C = similar(A)
+    for j in axes(A,2), i in axes(A,1)
+        C[i,j] = fma(-σ, B[i,j], A[i,j])
     end
-  end
-  return A1
+    return C
 end
 
-# complex shift for spec transform
-function shift(
-  A::AbstractMatrix{Complex{E}},
-  B::AbstractMatrix{Complex{E}},
-  σ,
-) where {E<:AbstractFloat}
-  A1 = similar(A)
-  for k in axes(A, 2)
-    for j in axes(A, 1)
-      zr = fma(-σ, real(B[j, k]), real(A[j, k]))
-      zi = fma(-σ, imag(B[j, k]), imag(A[j, k]))
-      A1[j, k] = complex(zr, zi)
+function shift(A::AbstractMatrix{Complex{E}}, B::AbstractMatrix{Complex{E}}, σ) where {E<:AbstractFloat}
+    C = similar(A)
+    for j in axes(A,2), i in axes(A,1)
+        C[i,j] = complex(
+            fma(-σ, real(B[i,j]), real(A[i,j])),
+            fma(-σ, imag(B[i,j]), imag(A[i,j])),
+        )
     end
-  end
-  return A1
+    return C
 end
 
-# overloading factorization methods
-function factorize_shifted(Aσ::StridedMatrix, ::LQDMethod)
-  # LQD (original)
-  lqd(Hermitian(Aσ, :L))
-end
-
-function factorize_shifted(Aσ::StridedMatrix, ::LDLtMethod)
-  # Bunch-Kaufman (LDLᵗ)
-  bunchkaufman!(Hermitian(Aσ, :L); check=false)
-end
-
-function factorize_shifted(Aσ::StridedMatrix, ::LUMethod)
-  # standard LU
-  lu!(Aσ; check=false)
-end
-
-function factorize_shifted(Aσ::StridedMatrix, ::EigMethod)
-  # eigendecomposition
-  eigen!(Hermitian(Aσ, :L))
-end
-
-# custom exception for exceeding threshold (per paper)
+# Custom error type for bounding ||X||
 struct EtaXError{T} <: Exception
-  etax :: T
+    etax :: T
+    bound :: T
 end
 
-### ORIGINAL CODE ###
+# ------------------------------------------------------------
+# Main
+# ------------------------------------------------------------
 
-# function eig_spectral_trans(A, B, σ; ηx_max = 500.0, tol = 0.0)
+"""
+    eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=500)
 
-#   Base.require_one_based_indexing(A,B)
-  
-#   m, n = size(A)
-#   mb, nb = size(B)
-#   m == n ||
-#     throw(DimensionMismatch("Matrix A is not square: dimensions are ($m, $n)"))
-#   mb == nb ||
-#     throw(DimensionMismatch("Matrix B is not square: dimensions are ($mb,$nb)"))
-#   n == nb ||
-#     throw(DimensionMismatch(
-#       "Matrix A has dimensions ($m,$n) and B has dimensions ($mb,$nb)"))
+Compute generalized eigenpairs of Hermitian matrices (A,B) with B ≽ 0,
+using a shift-and-invert spectral transform with shift σ.
 
-#   Fb = cholesky(Hermitian(B), RowMaximum(), tol = tol, check = false)
-#   A1 = shift(A, B, σ)
+The algorithm is:
 
-#   r = Fb.rank
-#   ip = invperm(Fb.p)
-#   Cb = Matrix(Fb.L)[ip, 1:r]
-  
-#   Fa = lqd(Hermitian(A1, :L))
+1. Form Aσ = A - σB.
+2. Pivoted Cholesky: B ≈ Cb*Cbᵀ.
+   -`tol` handles numerical stability issues with problematic pivots.
+3. Factorize Aσ using one of:
+   - `:LQD`  → custom LQD factorization
+   - `:LDLt` → Bunch–Kaufman (symmetric-indefinite)
+   - `:LU`   → LU factorization
+   - `:Eig`  → full eigendecomposition
+4. Apply Aσ⁻¹ to Cb:
+   - For `:Eig`, use the spectral identity
+         Aσ⁻¹ = Q Λ⁻¹ Qᵀ
+     with cutoff `pinv_tol`:
+         (Λ⁺)_{ii} = 1/λᵢ if |λᵢ| > pinv_tol else 0.
+     This is the **Moore–Penrose pseudoinverse** of Aσ, which is why `pinv_tol`
+     is used suggestively (also for zero/near zero eigenvalues - numerical
+     stability).
+   - For the others, solve directly with the factorization.
+5. Form reduced operator W = Cbᵀ Aσ⁻¹ Cb.
+6. Solve WU = UΘ.
+7. Recover original eigenvalues: λ = σ + 1/θ.
+8. Recover eigenvectors:
+   - `:LQD`: V = (F')⁻¹ (D * (XU)), X = Aσ⁻¹Cb.
+   - Others: V = Cb' \ U.
 
-#   Da = Fa.S
-#   η = sqrt(opnorm(A1, Inf) / opnorm(B, Inf))
-  
-#   X = Fa\Cb
-#   ηx = η * opnorm(X, Inf)
-#   ηx <= ηx_max || throw(EtaXError(ηx))
+Returns:
+(Cb, U, θ, λ, α, β, V, Y, η, D).
+"""
+function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=500)
+    # 1. Shift
+    Aσ = shift(A,B,σ)
 
-#   W = X'*(Da*X)
-
-#   θ, U = eigen(Hermitian(W))
-#   λ = similar(θ)
-#   β = copy(θ)
-#   α = similar(θ)
-#   for j in 1:r
-#     α[j] = fma(σ, θ[j], one(λ[j]))
-#     λ[j] = α[j]/β[j]
-#   end
-#   V = Fa' \ (Da*(X*U))
-#   return Cb, U, θ, λ, α, β, V, X, η, Da
-# end
-
-### END ORIGINAL ###
-
-# continuing with factorization overload, we require the same for the inversion
-function apply_inv!(Y::StridedMatrix, F, ::LQDMethod)
-  # LQD (original) 
-  (Y .= F \ Y)
-end
-
-function apply_inv!(Y::StridedMatrix, F, ::LDLtMethod)
-  # Bunch-Kaufman (LDLᵗ)
-  (Y .= F \ Y)
-end
-
-function apply_inv!(Y::StridedMatrix, F, ::LUMethod)
-  # standard LU
-  (Y .= F \ Y)
-end
-
-function apply_inv!(Y::StridedMatrix, F::Eigen, ::EigMethod; pinv_tol=0.0)
-  # eigendecomposition
-    invλ = similar(F.values)
-    for i in eachindex(F.values)
-        λ = F.values[i]
-        invλ[i] = (abs(λ) ≤ pinv_tol) ? zero(λ) : inv(λ)
-    end
-    
-    Y .= F.vectors' * Y # Y ← Q'Y
-    Y .= invλ .* Y # Y ← Λ^{-1}*Y (element-wise scaling)
-    Y .= F.vectors * Y # Y ← Q*Y
-    
-    return Y
-end
-
-function eig_spectral_trans(A::StridedMatrix,B::StridedMatrix, σ;
-                            method::FactorizationMethod = LQDMethod(),
-                            tol::Float64 = 0.0,
-                            pinv_tol::Float64 = 0.0,
-                            ηx_max::Float64 = 500.0)
-
-    # spectral shift
-    Aσ = shift(A, B, σ)
-
-    # pivoted Cholesky of B
-    Fb = cholesky(Hermitian(B, :L), RowMaximum(); tol=tol, check=false)
-    r = Fb.rank
+    # 2. Pivoted Cholesky of B
+    Fb = cholesky!(Hermitian(B,:L), RowMaximum(), tol=tol, check=false)
+    r  = Fb.rank
     ip = invperm(Fb.p)
-    Cb = Matrix(Fb.L)[ip, 1:r]
-    Cb_r = Cb # working copy
+    Cb = Fb.factors[:,1:r]
 
-    # now we abstract via factorization methods
-    F = factorize_shifted(Aσ, method)
-
-    # now we may apply the inverse in just one go: Y = Aσ^{-1} * Cb
-    Y = copy(Cb_r)
-    if method isa EigMethod
-        apply_inv!(Y, F, method; pinv_tol=pinv_tol)
+    # 3. Factorize Aσ (method-dependent)
+    F = nothing
+    if method == :LQD
+        F = lqd(Hermitian(Aσ,:L))
+    elseif method == :LDLt
+        F = bunchkaufman!(Hermitian(Aσ,:L))
+    elseif method == :LU
+        F = lu!(Aσ)
+    elseif method == :Eig
+        F = eigen!(Hermitian(Aσ,:L))
     else
-        apply_inv!(Y, F, method)
+        throw(ArgumentError("Unknown method: $method"))
     end
 
-    # reduced (possibly) Hermitian operator & its eigen structure
-    W = Hermitian(Cb_r' * Y, :L)
-    eigW = eigen(W)
-    θ, U = eigW.values, eigW.vectors
-
-    # convert θ to (α,β,λ) per the paper
-    λ = similar(θ); β = copy(θ); α = similar(θ)
-    for j in eachindex(θ)
-        α[j] = fma(σ, θ[j], one(θ[j]))   # get α (= 1 + σ θ)
-        λ[j] = α[j] / β[j]               # and λ (= σ + 1/θ)
-    end
-
-    # evects: note for LQD, V = Fa' \ (Da*(X*U)) above. but to cover all the
-    # factorization methods, we need to avoid Da & X here. we can use the below
-    # to preserve Hermitian structure. we'll split into LQD vs others, maintaining
-    # the original code's structure for LQD
-    if method isa LQDMethod
-      # preserve existing structure
-      X = Y # per Y, X = Aσ^{-1} * Cb
-      Da = F.D
-      V = F' \ (Da * (X * U))
+    # 4. Apply inverse once: Y = Aσ⁻¹ * Cb
+    Y = copy(Cb)
+    if method == :Eig
+        # Spectral decomposition: Aσ = Q Λ Qᵀ
+        # Apply pseudoinverse: Aσ⁺ = Q Λ⁺ Qᵀ → efficient way to avoid zero or 
+        # near zero eigenvalues (numerical instability), so while not computed
+        # directly, this is the Moore–Penrose pseudoinverse underneath, so we
+        # indicate as much with the notation.
+        Y = F.vectors' * Y        # Qᵀ * Cb
+        for j in axes(Y,1)
+            λj = F.values[j]
+            if abs(λj) > pinv_tol
+                Y[j,:] ./= λj     # scale by 1/λj
+            else
+                Y[j,:] .= 0       # cutoff → pseudoinverse sets to 0
+            end
+        end
+        Y = F.vectors * Y         # Q * (Λ⁺ Qᵀ Cb)
     else
-      # for other factorizations, we just preserve Hermitian structure as
-      # mentioned
-      X = Y
-      Da = nothing
-      V = Cb' \ U
+        # Direct solve with factorization
+        Y .= F \ Y
     end
 
-    # tests expect particular signatures, so we maintin original code's return
-    # shape (even if some entries are placeholders as `Da` above, e.g.)
-    η  = 0.0
+    # 5. Reduced operator
+    W = Hermitian(Cb' * Y, :L)
+    θ, U = eigen(W)
 
-    return Cb, U, θ, λ, α, β, V, X, η, Da
+    # 6. Recover eigenvalues
+    m = length(θ)
+    α = similar(θ); β = copy(θ); λ = similar(θ)
+    for j in 1:m
+        α[j] = 1 + σ*θ[j]
+        λ[j] = α[j]/β[j]    # equivalently λ = σ + 1/θ
+    end
+
+    # 7. Recover eigenvectors
+    V = nothing
+    if method == :LQD
+        X = Y
+        V = F' \ (F.D * (X * U))
+    else
+        V = Cb' \ U
+    end
+
+    # 8. Return results
+    return Cb, U, θ, λ, α, β, V, Y, 0.0, (method == :LQD ? F.D : nothing)
 end
