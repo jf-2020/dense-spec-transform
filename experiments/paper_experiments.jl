@@ -83,6 +83,7 @@ function run_spectral(
   A,
   B,
   σ;
+  method = :LQD,
   ηx_max = 500.0,
   r::Union{Int,Nothing} = size(A, 1),
   tol = 0.0,
@@ -92,7 +93,7 @@ function run_spectral(
   bound_small = nothing, 
 )
   Cb, U, θ, λ, α, β, V, X, η, Da =
-    eig_spectral_trans(A, B, σ; ηx_max = ηx_max, tol = tol)
+    eig_spectral_trans(A, B, σ; method = method, ηx_max = ηx_max, tol = tol)
   n, _ = size(A)
   r = length(θ)
   println("Rank: $r")
@@ -171,7 +172,11 @@ default(
   tickfontsize = 10,
 )
 
+# --- Plot directory setup ---
 plotdir::String = "./plots/"
+isdir(plotdir) || mkpath(plotdir)  # create directory if it doesn't exist
+# ----------------------------
+
 # Fluid flow example
 B0::Matrix{Float64} = Matrix(MatrixMarket.mmread("MatrixMarket/bcsstm13.mtx"))
 n::Int64 = size(B0,2)
@@ -231,6 +236,7 @@ end
       A,
       B,
       σ;
+      method = method,
       condition = false,
       tol = 0.0,
       bound_small = 1e-14,
@@ -256,6 +262,7 @@ end
       A,
       B,
       σ;
+      method = method,
       condition = true,
       tol = tol=0.0,
       plotkws = plotkws,
@@ -279,6 +286,7 @@ end
       A,
       B,
       σ;
+      method = method,
       condition = false,
       tol = 0.0,
       bound_large = 1e-15,
@@ -304,6 +312,7 @@ end
       A,
       B,
       σ;
+      method = method,
       condition = true,
       tol = 0.0,
       plotkws = plotkws,
@@ -334,26 +343,43 @@ function show_matrix_info(σ0; tol=0.0)
   GC.gc()
 end
 
+# First run the baseline (independent of factorization method)
+println("\n>>> Running standard baseline tests <<<")
+
 pl1_standard = test1_standard()
+println("Saving pl1_standard.png")
 savefig(pl1_standard, "$plotdir/pl1_standard")
 display(pl1_standard)
 
 pl1_standard_cond = test1_standard_cond()
+println("Saving pl1_standard_cond.png")
 savefig(pl1_standard_cond, "$plotdir/pl1_standard_cond")
 display(pl1_standard_cond)
 
-pl1_spectral_small = test1_spectral_small()
-savefig(pl1_spectral_small, "$plotdir/pl1_spectral_small")
-display(pl1_spectral_small)
+# Then iterate spectral tests over factorization
+methods = [:LQD, :LDLt, :LU, :Eig]
 
-pl1_spectral_small_cond = test1_spectral_small_cond()
-savefig(pl1_spectral_small_cond, "$plotdir/pl1_spectral_small_cond")
-display(pl1_spectral_small_cond)
+for m in methods
+  println("\n==============================")
+  println("Running spectral experiments with method = $m")
 
-pl1_spectral_large = test1_spectral_large()
-savefig(pl1_spectral_large, "$plotdir/pl1_spectral_large")
-display(pl1_spectral_large)
+  println("  -> test1_spectral_small ($m)")
+  pl1_spectral_small = test1_spectral_small(; method = m)
+  savefig(pl1_spectral_small, "$plotdir/pl1_spectral_small_$(m).png")
+  display(pl1_spectral_small)
 
-pl1_spectral_large_cond = test1_spectral_large_cond()
-savefig(pl1_spectral_large_cond, "$plotdir/pl1_spectral_large_cond")
-display(pl1_spectral_large_cond)
+  println("  -> test1_spectral_small_cond ($m)")
+  pl1_spectral_small_cond = test1_spectral_small_cond(; method = m)
+  savefig(pl1_spectral_small_cond, "$plotdir/pl1_spectral_small_cond_$(m).png")
+  display(pl1_spectral_small_cond)
+
+  println("  -> test1_spectral_large ($m)")
+  pl1_spectral_large = test1_spectral_large(; method = m)
+  savefig(pl1_spectral_large, "$plotdir/pl1_spectral_large_$(m).png")
+  display(pl1_spectral_large)
+
+  println("  -> test1_spectral_large_cond ($m)")
+  pl1_spectral_large_cond = test1_spectral_large_cond(; method = m)
+  savefig(pl1_spectral_large_cond, "$plotdir/pl1_spectral_large_cond_$(m).png")
+  display(pl1_spectral_large_cond)
+end
