@@ -222,7 +222,7 @@ end
   return pl
 end
 
-@views function test1_spectral_small()
+@views function test1_spectral_small(; method=:LQD)
   pl = let
     σ0 = 10.0
     @show σ = σ0 * nrma2/nrmb2
@@ -247,7 +247,7 @@ end
   return pl
 end
 
-@views function test1_spectral_small_cond()
+@views function test1_spectral_small_cond(; method=:LQD)
   dB = (x -> exp(-0.02 * x)).(collect(n:-1:1)) * opnorm(B0)
   pl = let
     σ0 = 10.0
@@ -272,7 +272,7 @@ end
   return pl
 end
 
-@views function test1_spectral_large()
+@views function test1_spectral_large(; method=:LQD)
   pl = let
     σ0 = 1e7
     @show σ = σ0 * nrma2/nrmb2
@@ -297,7 +297,7 @@ end
   return pl
 end
 
-@views function test1_spectral_large_cond()
+@views function test1_spectral_large_cond(; method=:LQD)
   dB = (x -> exp(-0.02*x)).(collect(n:-1:1)) * opnorm(B0)
   pl = let
     σ0 = 1e7
