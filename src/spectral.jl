@@ -39,8 +39,10 @@ end
 # Main
 # ------------------------------------------------------------
 
+# TODO: explore different tolerances for pivoted Cholesky and pseudoinverse
+
 """
-    eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=500)
+    eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=500.0)
 
 Compute generalized eigenpairs of Hermitian matrices (A,B) with B ≽ 0,
 using a shift-and-invert spectral transform with shift σ.
@@ -49,7 +51,7 @@ The algorithm is:
 
 1. Form Aσ = A - σB.
 2. Pivoted Cholesky: B ≈ Cb*Cbᵀ.
-   -`tol` handles numerical stability issues with problematic pivots.
+   - `tol` handles numerical stability issues with problematic pivots.
 3. Factorize Aσ using one of:
    - `:LQD`  → custom LQD factorization
    - `:LDLt` → Bunch–Kaufman (symmetric-indefinite)
@@ -74,7 +76,7 @@ The algorithm is:
 Returns:
 (Cb, U, θ, λ, α, β, V, Y, η, D).
 """
-function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=500)
+function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=500.0)
     # 1. Shift
     Aσ = shift(A,B,σ)
 
@@ -136,8 +138,7 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=50
     # 7. Recover eigenvectors
     V = nothing
     if method == :LQD
-        X = Y
-        V = F' \ (F.D * (X * U))
+        V = F' \ (F.D * (Y * U))
     else
         V = Cb' \ U
     end
