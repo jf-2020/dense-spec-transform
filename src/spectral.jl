@@ -39,10 +39,8 @@ end
 # Main
 # ------------------------------------------------------------
 
-# TODO: explore different tolerances for pivoted Cholesky and pseudoinverse
-
 """
-    eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=500.0)
+    eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
 
 Compute generalized eigenpairs of Hermitian matrices (A,B) with B ≽ 0,
 using a shift-and-invert spectral transform with shift σ.
@@ -60,11 +58,6 @@ The algorithm is:
 4. Apply Aσ⁻¹ to Cb:
    - For `:Eig`, use the spectral identity
          Aσ⁻¹ = Q Λ⁻¹ Qᵀ
-     with cutoff `pinv_tol`:
-         (Λ⁺)_{ii} = 1/λᵢ if |λᵢ| > pinv_tol else 0.
-     This is the **Moore–Penrose pseudoinverse** of Aσ, which is why `pinv_tol`
-     is used suggestively (also for zero/near zero eigenvalues - numerical
-     stability).
    - For the others, solve directly with the factorization.
 5. Form reduced operator W = Cbᵀ Aσ⁻¹ Cb.
 6. Solve WU = UΘ.
@@ -76,18 +69,32 @@ The algorithm is:
 Returns:
 (Cb, U, θ, λ, α, β, V, Y, η, D).
 """
-function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=500.0)
-    # 1. Shift
+function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
+    # 1. Shift & compute η
     Aσ = shift(A,B,σ)
+    η = sqrt(opnorm(Aσ)/opnorm(B))
 
     # 2. Pivoted Cholesky of B
-    Fb = cholesky!(Hermitian(B,:L), RowMaximum(), tol=tol, check=false)
+    Fb = cholesky(Hermitian(B,:L), RowMaximum(), tol=tol, check=false)
     r  = Fb.rank
     ip = invperm(Fb.p)
-    Cb = Fb.factors[:,1:r]
+    Cb = Matrix(Fb.L)[ip,1:r] 
 
     # 3. Factorize Aσ (method-dependent)
-    F = nothing
+
+    ###################################
+    # Comment: It might be better to pass in a type.  I ran @code_warntype
+    # on this and your factorization F is a huge union, which creates
+    # some possibility of inefficiency, although it's certainly not an
+    # issue for testing and it's more important to get everything working
+    # than to worry about it.
+
+    ## Reply: I've decided, for now, to leave as-is. Though I've read the design
+    ## pattern I used before is common for Julia, providing the high-level
+    ## Factorization type, with various subtypes for the different factorizations.
+    ## We can revert back to that if really necessary.
+    ###################################
+
     if method == :LQD
         F = lqd(Hermitian(Aσ,:L))
     elseif method == :LDLt
@@ -100,28 +107,53 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=50
         throw(ArgumentError("Unknown method: $method"))
     end
 
-    # 4. Apply inverse once: Y = Aσ⁻¹ * Cb
-    Y = copy(Cb)
-    if method == :Eig
-        # Spectral decomposition: Aσ = Q Λ Qᵀ
-        # Apply pseudoinverse: Aσ⁺ = Q Λ⁺ Qᵀ → efficient way to avoid zero or 
-        # near zero eigenvalues (numerical instability), so while not computed
-        # directly, this is the Moore–Penrose pseudoinverse underneath, so we
-        # indicate as much with the notation.
-        Y = F.vectors' * Y        # Qᵀ * Cb
-        for j in axes(Y,1)
-            λj = F.values[j]
-            if abs(λj) > pinv_tol
-                Y[j,:] ./= λj     # scale by 1/λj
-            else
-                Y[j,:] .= 0       # cutoff → pseudoinverse sets to 0
-            end
-        end
-        Y = F.vectors * Y         # Q * (Λ⁺ Qᵀ Cb)
-    else
+    ###################################
+    # TODO / Question:
+    # Are the products for X correct for each factorization?
+    #
+    # LU, for example, doesn't have an explicit sign diagonal matrix, so I naively
+    # used (LU)⁻¹ for Ca⁻¹. I naively computed the same for Bunch-Kaufman, but I
+    # thinking about a similar Da = D S D type factorization to extract the signs,
+    # in which case I might need a manual routine that handles the 2x2 vs 1x1 cases.
+    #
+    # For now, I split the two into separate if-else cases below (even though their
+    # naive implementation is the same) in the event they do require different
+    # treatments for ||X|| estimation.
+    ###################################
+
+    # 4. Apply inverse once, Y = Aσ⁻¹ * Cb, and estimate ||X||
+    if method == :LQD
+        # LQD: Aσ = L * Q * D * S * D * Q' * L⁻¹
+        Y = F' \ (F.S * (F \ Cb))
+
+        # Compute X = D⁻¹ * Qᵀ * L⁻¹ * Cb
+        X = F.D \ (F.Q' * (F.L \ Cb))
+    elseif method == :LDLt
         # Direct solve with factorization
-        Y .= F \ Y
+        Y = F \ Cb
+
+        # Compute X = D⁻¹ * L⁻¹ * P * Cb
+        X = F.D \ (F.L \ (Fb.p * Cb))
+    elseif method == :LU
+        # Direct solve with factorization
+        Y = F \ Cb
+
+        # Compute X = U⁻¹ * L⁻¹ * Pᵀ * Cb
+        X = F.U \ (F.L \ (Fb.p' * Cb))
+    elseif method == :Eig
+        # Spectral decomposition: Aσ = Q Λ Qᵀ
+        Y = F.vectors' * Cb         # Qᵀ * Cb
+        Y = Diagonal(F.values) \ Y
+        Y = F.vectors * Y         # Q * (Λ⁺ Qᵀ Cb)
+
+        # Compute X = D⁻¹ * Qᵀ * Cb
+        Λ = F.values                    # eigenvalues of Aσ from eigendecomposition
+        D = Diagonal(sqrt.(abs.(Λ)))    # D = diag(sqrt(|Λ|))
+        X = D \ F.vectors' * Cb         # X = D⁻¹ * Qᵀ * Cb
     end
+
+    # then compute ||X|| estimate
+    normX = opnorm(X)
 
     # 5. Reduced operator
     W = Hermitian(Cb' * Y, :L)
@@ -136,13 +168,32 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, pinv_tol=0, ηx_max=50
     end
 
     # 7. Recover eigenvectors
-    V = nothing
-    if method == :LQD
-        V = F' \ (F.D * (Y * U))
+    if method == :Eig
+        V = F.vectors * (Diagonal(F.values) \ (F.vectors' * (Cb * U)))
+    elseif method == :LQD
+        V = F' \ (F.S * (F \ (Cb * U)))
     else
-        V = Cb' \ U
+        V = F \ (Cb * U)
     end
 
-    # 8. Return results
-    return Cb, U, θ, λ, α, β, V, Y, 0.0, (method == :LQD ? F.D : nothing)
+    # 8. Handle η||X|| estimate
+    if ηx_max > 0 && η > ηx_max
+        throw(EtaXError(η, ηx_max))
+    end
+
+    # and compute the ill conditioning threshold
+    ηx = η * normX
+
+    ###################################
+    # TODO:
+    # Still need to adjust the return value, but to do that, all the endpoints
+    # calling this function need to be updated, too. Not being necessary now,
+    # I'll leave it for later.
+    #
+    # It would also be helpful to return ηx, exposing it to the user for error
+    # analysis purposes.
+    ###################################
+
+    # 9. Return results
+    return Cb, U, θ, λ, α, β, V, Y, η, nothing
 end
