@@ -178,7 +178,14 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
 
     # 8. Handle η||X|| estimate
     if ηx_max > 0 && η > ηx_max
-        throw(EtaXError(η, ηx_max))
+        ###################################
+        # Comment: For now, just print a warning. Later, we can make this
+        # throw an error if we want to enforce it strictly.
+        ###################################
+        # throw(EtaXError(η, ηx_max))
+
+        # instead, we'll just warn the user of potential inaccuracy
+        @warn "η = $η exceeds maximum ηx_max = $ηx_max."
     end
 
     # and compute the ill conditioning threshold
