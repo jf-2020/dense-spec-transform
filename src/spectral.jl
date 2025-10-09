@@ -133,13 +133,13 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
         Y = F \ Cb
 
         # Compute X = D⁻¹ * L⁻¹ * P * Cb
-        X = F.D \ (F.L \ (Fb.p * Cb))
+        X = F.D \ (F.L \ (Fb.P * Cb))
     elseif method == :LU
         # Direct solve with factorization
         Y = F \ Cb
 
         # Compute X = U⁻¹ * L⁻¹ * Pᵀ * Cb
-        X = F.U \ (F.L \ (Fb.p' * Cb))
+        X = F.U \ (F.L \ (Fb.P' * Cb))
     elseif method == :Eig
         # Spectral decomposition: Aσ = Q Λ Qᵀ
         Y = F.vectors' * Cb         # Qᵀ * Cb
