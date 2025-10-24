@@ -29,6 +29,11 @@ function shift(A::AbstractMatrix{Complex{E}}, B::AbstractMatrix{Complex{E}}, σ)
     return C
 end
 
+###################################
+# TODO:
+# Is this really necessary? Check & perhaps remove it later.
+###################################
+
 # Custom error type for bounding ||X||
 struct EtaXError{T} <: Exception
     etax :: T
@@ -38,6 +43,10 @@ end
 # ------------------------------------------------------------
 # Main
 # ------------------------------------------------------------
+
+###################################
+# TODO: implement code profiling with table visualizations later
+###################################
 
 """
     eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
@@ -82,6 +91,18 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
 
     # 3. Factorize Aσ (method-dependent)
 
+    # For the ||X|| calculation later, LQD is needed regardless of the method.
+    ###################################
+    # TODO / Question:
+    # Should I use copy(Aσ) here to avoid modifying the input Aσ? Or is my comment
+    # below correct, namely, that lqd() calls lqd!() on copy(Aσ) internally, so Aσ
+    # is unchanged? I ask because I think some of the printed debugging info upon
+    # running "paper_experiments.jl" seems to indicate something went wrong after
+    # the below change was implemented.
+    ###################################
+    F_LQD = lqd(Hermitian(Aσ,:L)) # lqd operates in-place on a COPY of Aσ, so Aσ
+                                  # is unchanged.
+
     ###################################
     # Comment: It might be better to pass in a type.  I ran @code_warntype
     # on this and your factorization F is a huge union, which creates
@@ -94,9 +115,10 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
     ## Factorization type, with various subtypes for the different factorizations.
     ## We can revert back to that if really necessary.
     ###################################
-
     if method == :LQD
-        F = lqd(Hermitian(Aσ,:L))
+        # Use the pre-computed LQD factorization. This particular branch is more
+        # for readability.
+        F = F_LQD
     elseif method == :LDLt
         F = bunchkaufman!(Hermitian(Aσ,:L))
     elseif method == :LU
@@ -107,21 +129,7 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
         throw(ArgumentError("Unknown method: $method"))
     end
 
-    ###################################
-    # TODO / Question:
-    # Are the products for X correct for each factorization?
-    #
-    # LU, for example, doesn't have an explicit sign diagonal matrix, so I naively
-    # used (LU)⁻¹ for Ca⁻¹. I naively computed the same for Bunch-Kaufman, but I
-    # thinking about a similar Da = D S D type factorization to extract the signs,
-    # in which case I might need a manual routine that handles the 2x2 vs 1x1 cases.
-    #
-    # For now, I split the two into separate if-else cases below (even though their
-    # naive implementation is the same) in the event they do require different
-    # treatments for ||X|| estimation.
-    ###################################
-
-    # 4. Apply inverse once, Y = Aσ⁻¹ * Cb, and estimate ||X||
+    # 4. Apply inverse once, Y = Aσ⁻¹ * Cb, and compute X
     if method == :LQD
         # LQD: Aσ = L * Q * D * S * D * Q' * L⁻¹
         Y = F' \ (F.S * (F \ Cb))
@@ -132,14 +140,24 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
         # Direct solve with factorization
         Y = F \ Cb
 
-        # Compute X = D⁻¹ * L⁻¹ * P * Cb
-        X = F.D \ (F.L \ (Fb.P * Cb))
+        ######
+        # # Compute X = D⁻¹ * L⁻¹ * P * Cb
+        # X = F.D \ (F.L \ (Fb.P * Cb))
+        ######
+
+        # Use X from the pre-computed LQD factorization
+        X = F_LQD.D \ (F_LQD.Q' * (F_LQD.L \ Cb))
     elseif method == :LU
         # Direct solve with factorization
         Y = F \ Cb
 
-        # Compute X = U⁻¹ * L⁻¹ * Pᵀ * Cb
-        X = F.U \ (F.L \ (Fb.P' * Cb))
+        ######
+        # # Compute X = U⁻¹ * L⁻¹ * Pᵀ * Cb
+        # X = F.U \ (F.L \ (Fb.P' * Cb))
+        ######
+
+        # Use X from the pre-computed LQD factorization
+        X = F_LQD.D \ (F_LQD.Q' * (F_LQD.L \ Cb))
     elseif method == :Eig
         # Spectral decomposition: Aσ = Q Λ Qᵀ
         Y = F.vectors' * Cb         # Qᵀ * Cb
@@ -152,32 +170,12 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
         X = D \ F.vectors' * Cb         # X = D⁻¹ * Qᵀ * Cb
     end
 
-    # then compute ||X|| estimate
+    # 5. Consider the η||X|| max threshold
     normX = opnorm(X)
-
-    # 5. Reduced operator
-    W = Hermitian(Cb' * Y, :L)
-    θ, U = eigen(W)
-
-    # 6. Recover eigenvalues
-    m = length(θ)
-    α = similar(θ); β = copy(θ); λ = similar(θ)
-    for j in 1:m
-        α[j] = 1 + σ*θ[j]
-        λ[j] = α[j]/β[j]    # equivalently λ = σ + 1/θ
-    end
-
-    # 7. Recover eigenvectors
-    if method == :Eig
-        V = F.vectors * (Diagonal(F.values) \ (F.vectors' * (Cb * U)))
-    elseif method == :LQD
-        V = F' \ (F.S * (F \ (Cb * U)))
-    else
-        V = F \ (Cb * U)
-    end
-
-    # 8. Handle η||X|| estimate
-    if ηx_max > 0 && η > ηx_max
+    # compute the theoretical (residual) threshold
+    ηx = η * normX
+    # then check against the user-defined (or default) max
+    if ηx > ηx_max
         ###################################
         # Comment: For now, just print a warning. Later, we can make this
         # throw an error if we want to enforce it strictly.
@@ -185,11 +183,29 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
         # throw(EtaXError(η, ηx_max))
 
         # instead, we'll just warn the user of potential inaccuracy
-        @warn "η = $η exceeds maximum ηx_max = $ηx_max."
+        @warn "Value of η ||X|| is $(ηx), which exceeds the given bound $(ηx_max)."
     end
 
-    # and compute the ill conditioning threshold
-    ηx = η * normX
+    # 6. Reduced operator
+    W = Hermitian(Cb' * Y, :L)
+    θ, U = eigen(W)
+
+    # 7. Recover eigenvalues
+    m = length(θ)
+    α = similar(θ); β = copy(θ); λ = similar(θ)
+    for j in 1:m
+        α[j] = 1 + σ*θ[j]
+        λ[j] = α[j]/β[j]    # equivalently λ = σ + 1/θ
+    end
+
+    # 8. Recover eigenvectors
+    if method == :Eig
+        V = F.vectors * (Diagonal(F.values) \ (F.vectors' * (Cb * U)))
+    elseif method == :LQD
+        V = F' \ (F.S * (F \ (Cb * U)))
+    else
+        V = F \ (Cb * U)
+    end
 
     ###################################
     # TODO:
