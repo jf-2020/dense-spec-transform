@@ -92,8 +92,16 @@ function run_spectral(
   bound_large = nothing,
   bound_small = nothing, 
 )
-  Cb, U, θ, λ, α, β, V, X, η, Da =
+  Cb, U, θ, λ, α, β, V, Y, η, Da =
     eig_spectral_trans(A, B, σ; method = method, ηx_max = ηx_max, tol = tol)
+  
+  # --- CHECK: numerical symmetry of W = Cb' * Y ---
+  W_raw = Cb' * Y
+  err = opnorm(W_raw - W_raw', 2)
+  rel = err / max(opnorm(W_raw, 2), eps())
+  println("    [info] W symmetry: abs = ", err, ", rel = ", rel)
+  # -------------------------------------------------
+  
   n, _ = size(A)
   r = length(θ)
   println("Rank: $r")

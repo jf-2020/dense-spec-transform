@@ -218,5 +218,5 @@ function eig_spectral_trans(A, B, σ; method=:LQD, tol=0, ηx_max=500.0)
     ###################################
 
     # 9. Return results
-    return Cb, U, θ, λ, α, β, V, Y, η, nothing
+    return Cb, U, θ, λ, α, β, V, Y, ηx, nothing
 end
